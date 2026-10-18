@@ -1,6 +1,6 @@
 # RegionSegProject
 
-Research scripts for identifying color-developed sample regions in surface-enhanced Raman spectroscopy (SERS) images. The workflow converts polygon annotations into binary masks, trains a DeepLabV3-ResNet50 segmentation model, and visualizes predicted regions.
+Research scripts for identifying color-developed sample regions in surface-enhanced Raman spectroscopy (SERS) images. The workflow converts region annotations into binary masks, trains a DeepLabV3-ResNet50 segmentation model, and visualizes predicted regions.
 
 This repository provides the image-segmentation training reference for automated Raman experiments. It does not control a microscope or implement an autonomous experiment workflow. Datasets and trained checkpoints are not included.
 
@@ -8,11 +8,10 @@ This repository provides the image-segmentation training reference for automated
 
 | File | Purpose |
 | --- | --- |
-| `boundary2mask.py` | Convert VIA-style polygon annotations into binary PNG masks. |
+| `boundary2mask.py` | Convert VIA-style polygon, circle, and ellipse annotations into binary PNG masks. |
 | `DeepLabV3.py` | Train a binary segmentation model and save the best checkpoint and TensorBoard logs. |
 | `run_train.sh` | Example Slurm job for GPU training on KAUST Ibex. |
-| `visualize_predictions.py` | Run inference and save masks and overlays with a foreground centroid. |
-| `visualize_predictions copy.py` | Earlier visualization variant that also darkens the background. |
+| `visualize_predictions.py` | Run inference and save masks and overlays with per-region centroids. |
 | `test.py` | Small image color-conversion utility; not an automated test suite. |
 
 Historical notes referred to date-suffixed scripts that are not present in this checkout. These instructions use the actual filenames in the repository.
@@ -47,29 +46,31 @@ RegionSegProject/
 
 Each input PNG must have a matching grayscale mask named `<image_stem>_mask.png`, with foreground 255 and background 0. Keep the images directory limited to matching PNG inputs: the training dataset enumerates every file without filtering by extension.
 
-To generate masks, edit these variables in `boundary2mask.py`:
-
-- `boundary_filename`: annotation JSON path.
-- `images_filename`: source image directory.
-- `output`: mask output directory.
+To generate masks, pass the annotation file, source image directory, and mask output directory:
 
 ```bash
-python boundary2mask.py
+python boundary2mask.py --json annotations.json --img_dir dataset/images --out_dir dataset/masks
 ```
 
-The converter expects a top-level mapping of image records, each containing a `regions` dictionary. Each polygon region must contain `shape_attributes` with `name: "polygon"`, `all_points_x`, and `all_points_y`. All polygons for an image are combined into a single binary mask.
+The converter accepts a VIA project JSON containing `_via_img_metadata`, or annotation records supplied directly as a dictionary or list. Each record's `regions` can be a dictionary or list. It uses the record's `filename`, falling back to the dictionary key, and expects PNG source images.
 
-The current converter handles polygons only; circles and other JSON export layouts require adaptation. Records with no regions are skipped, so create zero-valued masks separately for negative images. Verify generated filenames against the required pairing above, especially when annotation keys contain suffixes after `.png`. Prefer ASCII paths for the converter's OpenCV file operations; use raw strings or forward slashes when editing Windows paths in Python.
+Supported shapes in `shape_attributes` are:
+
+- `polygon`: `all_points_x` and `all_points_y`.
+- `circle`: `cx`, `cy`, and `r`.
+- `ellipse`: `cx`, `cy`, `rx`, `ry`, and `theta` (radians).
+
+All supported regions in an image are combined into one binary mask. The output is named `<image_stem>_mask.png`. Image reading and writing support Unicode paths. Records with no regions and unreadable images are skipped, so create zero-valued masks separately for negative images and verify every training image has a corresponding mask.
 
 ## 2. Train the model
 
 Run from the repository root:
 
 ```bash
-python DeepLabV3.py
+python DeepLabV3.py --data_dir dataset --model_dir model_save
 ```
 
-The defaults are defined directly in the script:
+`--data_dir` and `--model_dir` are required. The data directory must contain `images/` and `masks/`; the model directory is created if needed. Other defaults are defined directly in the script:
 
 | Setting | Value |
 | --- | --- |
@@ -85,7 +86,7 @@ The defaults are defined directly in the script:
 
 The held-out split is called `test` in the code, but it selects the best checkpoint and therefore serves as validation. Use a separate test set for independent evaluation. The split is not seeded; ensure both training and validation splits contain data.
 
-Outputs are written to `model_save/<YYYYMMDD_HHMMSS>/`: `best_model.pth` contains the checkpoint with the lowest validation loss, and `logs/` contains TensorBoard training/validation losses and the model graph.
+Outputs are written to `<model_dir>/<YYYYMMDD_HHMMSS>/` (for example, `model_save/<YYYYMMDD_HHMMSS>/`): `best_model.pth` contains the checkpoint with the lowest validation loss, and `logs/` contains TensorBoard training/validation losses and the model graph.
 
 ```bash
 tensorboard --logdir model_save --port 7008
@@ -93,9 +94,11 @@ tensorboard --logdir model_save --port 7008
 
 ### Slurm / KAUST Ibex
 
-`run_train.sh` requests one GPU, eight CPUs, and five hours. It loads `cuda/12.2`, activates the `torch24` Conda environment, and runs from `/ibex/user/$USER/data/RegionSegProject`.
+`run_train.sh` requests one A100 GPU, eight CPUs, 64 GB of memory, and twenty hours. It loads `cuda/12.2`, activates the `torch24` Conda environment, and runs from `/ibex/user/$USER/data/RegionSegProject`.
 
-Adapt the module, environment, working directory, and resource settings to your cluster account before submitting:
+Set `DATA_DIR` and `MODEL_DIR` in the script (currently pointing to `dataset/yellow_260118`), and adapt the module, environment, working directory, and resources before submitting. The script also overrides `CUDA_VISIBLE_DEVICES` by querying A100 devices; verify that this respects your scheduler allocation on the target cluster.
+
+Submit and monitor the job:
 
 ```bash
 sbatch run_train.sh
@@ -119,9 +122,11 @@ python visualize_predictions.py
 Inference resizes images to the training dimensions, applies sigmoid, and thresholds predictions at 0.5. Outputs include:
 
 - `masks/<image_stem>_pred.png`: a mask visualization at inference resolution.
-- `combined/<image_stem>_combined.png`: an overlay at the original resolution, with foreground tinted red and its centroid marked.
+- `combined/<image_stem>_combined.png`: an overlay at the original resolution, with foreground tinted red and qualifying region centroids marked.
 
-The centroid covers all foreground pixels together, not each disconnected region separately. An empty mask is displayed with coordinates `(0, 0)`. Mask PNGs are produced by Matplotlib for visualization; an automated downstream pipeline should use explicit binary arrays and preserve image dimensions and coordinate conventions.
+The visualization finds external contours after resizing the mask to the original image dimensions. It marks each contour centroid when the contour area is at least 50 square pixels and its moment is nonzero. This threshold affects centroid annotation only; smaller regions remain in the saved mask and overlay. Holes are ignored when finding contours, and the overlay also darkens the background.
+
+Mask PNGs are produced by Matplotlib for visualization; an automated downstream pipeline should use explicit binary arrays and preserve image dimensions and coordinate conventions. Missing model files, missing image directories, and empty PNG directories cause the script to print a message and return.
 
 ## Integration and related repositories
 

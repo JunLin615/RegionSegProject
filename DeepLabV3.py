@@ -1,4 +1,5 @@
 import os
+import argparse
 from torch.utils.data import Dataset, DataLoader, random_split
 from torchvision import transforms
 from PIL import Image
@@ -129,14 +130,37 @@ def train_model(model, train_loader, test_loader, criterion, optimizer, model_sa
     writer.close()
 
 if __name__ == '__main__':
+    # 创建命令行参数解析器
+    parser = argparse.ArgumentParser(description='指定数据文件夹和模型存储文件夹路径')
+    # 添加命令行参数（必选参数）
+    parser.add_argument('--data_dir', required=True, help='数据文件夹路径（包含images子文件夹）')
+    parser.add_argument('--model_dir', required=True, help='模型存储文件夹路径')
+    # 解析命令行参数
+    args = parser.parse_args()
+    # 构建图像文件夹和掩码文件夹路径（基于数据文件夹）
+    image_dir = os.path.join(args.data_dir, 'images')  # 数据文件夹下的images子文件夹
+    mask_dir = os.path.join(args.data_dir, 'masks')    # 数据文件夹下的masks子文件夹
+    model_save_dir = args.model_dir                    # 模型存储文件夹
+
+    # 创建文件夹（如果不存在）
+    #os.makedirs(image_dir, exist_ok=True)
+    #os.makedirs(mask_dir, exist_ok=True)
+    os.makedirs(model_save_dir, exist_ok=True)
+
+    # 打印路径信息（验证是否正确）
+    print(f"图像文件夹路径: {image_dir}")
+    print(f"掩码文件夹路径: {mask_dir}")
+    print(f"模型存储路径: {model_save_dir}")
+
     # 定义数据转换
     transform = transforms.Compose([
         transforms.Resize((640, 1024)),
         transforms.ToTensor(),
     ])
-    image_dir = 'dataset/images'
-    mask_dir = 'dataset/masks'
-    model_save_dir = 'model_save'
+
+    #image_dir = 'dataset/images'
+    #mask_dir = 'dataset/masks'
+    #model_save_dir = 'model_save'
     # 创建数据集
     dataset = SegmentationDataset(image_dir=image_dir, mask_dir=mask_dir, transform=transform)
 
